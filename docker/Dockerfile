@@ -19,8 +19,8 @@ COPY requirements.txt .
 
 # 패키지 설치 및 캐시 제거를 통한 최적화
 RUN pip install --no-cache-dir -r requirements.txt \
-    && find /usr/local/lib/python3.9/site-packages -name "*.pyc" -delete \
-    && find /usr/local/lib/python3.9/site-packages -name "__pycache__" -exec rm -r {} + \
+    && find /usr/local -name '*.pyc' -delete \
+    && find /usr/local -name '__pycache__' -type d -exec rm -r {} + || true \
     && rm -rf ~/.cache/pip/*
 
 # 소스 코드 복사

@@ -5,52 +5,26 @@ import logging
 from typing import List, Dict
 from datetime import datetime, timezone, timedelta
 from botocore.exceptions import ClientError
-from dataclasses import dataclass
-from dotenv import load_dotenv
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from pytz import timezone as pytz_timezone
 from utils.mongodb_connector import MongoDBConnector
 from utils.aws_session_manager import AWSSessionManager
+from utils.config import Config
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class Config:
-    aws_regions: List[str]
-    aws_accounts: List[str]
-    environment: str
-    collection_name: str = 'aws_rds_instance_daily_info'
-    role_name: str = 'mgmt-db-monitoring-assumerole'
-
-    @classmethod
-    def from_env(cls) -> 'Config':
-        load_dotenv()
-        aws_regions = json.loads(os.getenv('AWS_REGIONS', '[]'))
-        aws_accounts_str = os.getenv('AWS_ACCOUNTS', '[]')
-        environment = os.getenv('ENVIRONMENT', 'production')
-
-        try:
-            aws_accounts = json.loads(aws_accounts_str)
-        except json.JSONDecodeError as e:
-            raise ValueError(f"AWS_ACCOUNTS environment variable is not a valid JSON array: {e}")
-
-        return cls(
-            aws_regions=aws_regions,
-            aws_accounts=aws_accounts,
-            environment=environment
-        )
 
 
 class RDSInstanceCollector:
     def __init__(self, config: Config):
         self.config = config
         self.kst = timezone(timedelta(hours=9))
-        self.aws_session_manager = AWSSessionManager.create(
-            environment=config.environment,
-            sso_profile=os.getenv('SSO_PROFILE', 'default'),
-            role_name=config.role_name
+        self.aws_session_manager = AWSSessionManager.create(config)
+        self.logger = logging.getLogger(__name__)
+
+        self.logger.info(
+            f"Initialized RDSInstanceCollector in {config.environment} environment "
+            f"using {config.auth_type} authentication"
         )
 
     async def save_instances(self, instances: List[Dict], account_id: str):
@@ -211,14 +185,22 @@ class RDSInstanceCollector:
             # 접근 권한 검증
             is_valid = await self.aws_session_manager.validate_access()
             if not is_valid:
-                logger.error("AWS access validation failed. Please check credentials.")
+                error_msg = (
+                    "SSO login required" if self.config.auth_type == 'sso'
+                    else "IAM role validation failed"
+                )
+                self.logger.error(f"AWS access validation failed: {error_msg}")
                 return
 
+            self.logger.info("Starting RDS instance collection for all accounts")
+
             # 계정별로 모든 리전의 데이터 수집
-            account_instances = {}
             for account_id in self.config.aws_accounts:
+                self.logger.info(f"Processing account: {account_id}")
                 account_tasks = []
+
                 for region in self.config.aws_regions:
+                    self.logger.debug(f"Adding collection task for {region} in account {account_id}")
                     task = self.collect_instance_data(account_id, region)
                     account_tasks.append(task)
 
@@ -231,19 +213,18 @@ class RDSInstanceCollector:
                     if isinstance(result, list):
                         valid_instances.extend(result)
                     elif isinstance(result, Exception):
-                        logger.error(f"Error collecting data for account {account_id}: {str(result)}")
+                        self.logger.error(f"Error collecting data for account {account_id}: {str(result)}")
 
                 if valid_instances:
-                    # 수집된 인스턴스가 있는 경우에만 저장
                     await self.save_instances(valid_instances, account_id)
-                    logger.info(f"Collected {len(valid_instances)} instances for account {account_id}")
+                    self.logger.info(f"Collected {len(valid_instances)} instances for account {account_id}")
                 else:
-                    logger.warning(f"No instances found for account {account_id}")
+                    self.logger.warning(f"No instances found for account {account_id}")
 
-            logger.info(f"Completed collection for all accounts at {self.get_kst_time()}")
+            self.logger.info(f"Completed collection for all accounts at {self.get_kst_time()}")
 
         except Exception as e:
-            logger.error(f"Error in collect_all_accounts: {e}")
+            self.logger.error(f"Error in collect_all_accounts: {e}")
             raise
 
 
@@ -303,7 +284,6 @@ async def main():
             scheduler.shutdown(wait=False)
         await MongoDBConnector.close()
         logger.info("Cleanup completed")
-
 
 if __name__ == '__main__':
     asyncio.run(main())

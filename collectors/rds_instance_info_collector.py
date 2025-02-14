@@ -11,7 +11,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from pytz import timezone as pytz_timezone
 from utils.mongodb_connector import MongoDBConnector
-from utils.aws_session_manager import AWSSSOSessionManager
+from utils.aws_session_manager import AWSSessionManager
 
 logger = logging.getLogger(__name__)
 
@@ -47,8 +47,10 @@ class RDSInstanceCollector:
     def __init__(self, config: Config):
         self.config = config
         self.kst = timezone(timedelta(hours=9))
-        self.aws_session_manager = AWSSSOSessionManager(
-            sso_profile=os.getenv('SSO_PROFILE', 'default')
+        self.aws_session_manager = AWSSessionManager.create(
+            environment=config.environment,
+            sso_profile=os.getenv('SSO_PROFILE', 'default'),
+            role_name=config.role_name
         )
 
     async def save_instances(self, instances: List[Dict], account_id: str):
@@ -206,10 +208,10 @@ class RDSInstanceCollector:
     async def collect_all_accounts(self):
         """모든 계정의 RDS 인스턴스 데이터 수집"""
         try:
-            # SSO 접근 권한 검증
-            is_valid = await self.aws_session_manager.validate_sso_access()
+            # 접근 권한 검증
+            is_valid = await self.aws_session_manager.validate_access()
             if not is_valid:
-                logger.error("SSO access validation failed. Please check SSO login status.")
+                logger.error("AWS access validation failed. Please check credentials.")
                 return
 
             # 계정별로 모든 리전의 데이터 수집
